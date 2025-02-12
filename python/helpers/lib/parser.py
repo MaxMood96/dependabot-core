@@ -4,6 +4,7 @@ import json
 import os.path
 import re
 
+import configparser
 import setuptools
 import pip._internal.req.req_file
 from pip._internal.network.session import PipSession
@@ -11,9 +12,81 @@ from pip._internal.req.constructors import (
     install_req_from_line,
     install_req_from_parsed_requirement,
 )
+
+from packaging.requirements import InvalidRequirement, Requirement
+# TODO: Replace 3p package `tomli` with 3.11's new stdlib `tomllib` once we
+#       drop support for Python 3.10.
+import tomli
+
 # Inspired by pips internal check:
 # https://github.com/pypa/pip/blob/0bb3ac87f5bb149bd75cceac000844128b574385/src/pip/_internal/req/req_file.py#L35
 COMMENT_RE = re.compile(r'(^|\s+)#.*$')
+
+
+def parse_pep621_dependencies(pyproject_path):
+    with open(pyproject_path, "rb") as file:
+        project_toml = tomli.load(file)
+
+    def parse_toml_section_pep621_dependencies(pyproject_path, dependencies):
+        requirement_packages = []
+
+        def version_from_req(specifier_set):
+            if (len(specifier_set) == 1 and
+                    next(iter(specifier_set)).operator in {"==", "==="}):
+                return next(iter(specifier_set)).version
+
+        for dependency in dependencies:
+            try:
+                req = Requirement(dependency)
+            except InvalidRequirement as e:
+                print(json.dumps({"error": repr(e)}))
+                exit(1)
+            else:
+                requirement_packages.append({
+                    "name": req.name,
+                    "version": version_from_req(req.specifier),
+                    "markers": str(req.marker) or None,
+                    "file": pyproject_path,
+                    "requirement": str(req.specifier),
+                    "extras": sorted(list(req.extras))
+                })
+
+        return requirement_packages
+
+    dependencies = []
+
+    if 'project' in project_toml:
+        project_section = project_toml['project']
+
+        if 'dependencies' in project_section:
+            dependencies_toml = project_section['dependencies']
+            runtime_dependencies = parse_toml_section_pep621_dependencies(
+                pyproject_path,
+                dependencies_toml
+            )
+            dependencies.extend(runtime_dependencies)
+
+        if 'optional-dependencies' in project_section:
+            optional_dependencies_toml = project_section[
+                'optional-dependencies'
+            ]
+            for group in optional_dependencies_toml:
+                group_dependencies = parse_toml_section_pep621_dependencies(
+                    pyproject_path,
+                    optional_dependencies_toml[group]
+                )
+                dependencies.extend(group_dependencies)
+
+    if 'build-system' in project_toml:
+        build_system_section = project_toml['build-system']
+        if 'requires' in build_system_section:
+            build_system_dependencies = parse_toml_section_pep621_dependencies(
+                pyproject_path,
+                build_system_section['requires']
+            )
+            dependencies.extend(build_system_dependencies)
+
+    return json.dumps({"result": dependencies})
 
 
 def parse_requirements(directory):
@@ -37,11 +110,20 @@ def parse_requirements(directory):
             )
             for parsed_req in requirements:
                 install_req = install_req_from_parsed_requirement(parsed_req)
-                if install_req.original_link:
+                if install_req.req is None:
+                    continue
+
+                # Ignore file: requirements
+                if install_req.link is not None and install_req.link.is_file:
                     continue
 
                 pattern = r"-[cr] (.*) \(line \d+\)"
                 abs_path = re.search(pattern, install_req.comes_from).group(1)
+
+                # Ignore dependencies from remote constraint files
+                if not os.path.isfile(abs_path):
+                    continue
+
                 rel_path = os.path.relpath(abs_path, directory)
 
                 requirement_packages.append({
@@ -156,23 +238,31 @@ def parse_setup(directory):
 
     if os.path.isfile(setup_cfg_path):
         try:
-            config = setuptools.config.read_configuration(setup_cfg_path)
+            config = configparser.ConfigParser()
+            config.read(setup_cfg_path)
 
             for req_type in [
                 "setup_requires",
                 "install_requires",
                 "tests_require",
             ]:
-                requires = config.get("options", {}).get(req_type, [])
+                requires = config.get(
+                    'options',
+                    req_type, fallback='').splitlines()
+                requires = [req for req in requires if req.strip()]
                 parse_requirements(requires, req_type, setup_cfg)
 
-            extras_require = config.get("options", {}).get(
-                "extras_require", {}
-            )
-            for key, value in extras_require.items():
-                parse_requirements(
-                    value, "extras_require:{}".format(key), setup_cfg
-                )
+            if config.has_section('options.extras_require'):
+                extras_require = config._sections['options.extras_require']
+                for key, value in extras_require.items():
+                    requires = value.splitlines()
+                    requires = [req for req in requires if req.strip()]
+                    parse_requirements(
+                        requires,
+                        f"extras_require:{key}",
+                        setup_cfg
+                    )
+
         except Exception as e:
             print(json.dumps({"error": repr(e)}))
             exit(1)

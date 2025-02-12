@@ -1,3 +1,4 @@
+# typed: true
 # frozen_string_literal: true
 
 def common_dir
@@ -26,4 +27,6 @@ RSpec.configure do |config|
       example.skip
     end
   end
+
+  config.profile_examples = 10
 end

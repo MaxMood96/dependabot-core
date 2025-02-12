@@ -1,3 +1,4 @@
+# typed: false
 # frozen_string_literal: true
 
 require "spec_helper"
@@ -32,13 +33,13 @@ RSpec.describe Dependabot::Hex::FileUpdater::MixfileGitPinUpdater do
       )
     end
 
-    context "specified over multiple lines" do
+    context "when the specification is in multiple lines" do
       let(:mixfile_fixture_name) { "git_source_multiple_lines" }
 
       it "updates the right dependency" do
         expect(updated_content).to include(%({:plug, "1.3.3"},))
         expect(updated_content).to include(
-          "{:phoenix,\n"\
+          "{:phoenix,\n" \
           '       github: "dependabot-fixtures/phoenix", tag: "v1.3.0"}'
         )
       end

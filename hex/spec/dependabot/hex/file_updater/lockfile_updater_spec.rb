@@ -1,3 +1,4 @@
+# typed: false
 # frozen_string_literal: true
 
 require "spec_helper"
@@ -10,13 +11,17 @@ RSpec.describe Dependabot::Hex::FileUpdater::LockfileUpdater do
     described_class.new(
       dependency_files: files,
       dependencies: [dependency],
-      credentials: [{
-        "type" => "git_source",
-        "host" => "github.com",
-        "username" => "x-access-token",
-        "password" => "token"
-      }]
+      credentials: [credentials]
     )
+  end
+
+  let(:credentials) do
+    {
+      "type" => "git_source",
+      "host" => "github.com",
+      "username" => "x-access-token",
+      "password" => "token"
+    }
   end
 
   let(:files) { [mixfile, lockfile] }
@@ -49,17 +54,17 @@ RSpec.describe Dependabot::Hex::FileUpdater::LockfileUpdater do
   end
   let(:tmp_path) { Dependabot::Utils::BUMP_TMP_DIR_PATH }
 
-  before { Dir.mkdir(tmp_path) unless Dir.exist?(tmp_path) }
+  before { FileUtils.mkdir_p(tmp_path) }
 
   describe "#updated_lockfile_content" do
     subject(:updated_lockfile_content) { updater.updated_lockfile_content }
 
     it "doesn't store the files permanently" do
-      expect { updated_lockfile_content }.
-        to_not(change { Dir.entries(tmp_path) })
+      expect { updated_lockfile_content }
+        .not_to(change { Dir.entries(tmp_path) })
     end
 
-    it { expect { updated_lockfile_content }.to_not output.to_stdout }
+    it { expect { updated_lockfile_content }.not_to output.to_stdout }
 
     it "updates the dependency version in the lockfile" do
       expect(updated_lockfile_content).to include %({:hex, :plug, "1.4.3")
@@ -86,7 +91,7 @@ RSpec.describe Dependabot::Hex::FileUpdater::LockfileUpdater do
         )
       end
 
-      context "targeting 1.3.2" do
+      context "when the target version is 1.3.2" do
         let(:target_version) { "1.3.2" }
 
         it "updates the dependency version in the lockfile" do
@@ -97,7 +102,7 @@ RSpec.describe Dependabot::Hex::FileUpdater::LockfileUpdater do
         end
       end
 
-      context "targeting 1.3.6" do
+      context "when the target version is 1.3.6" do
         let(:target_version) { "1.3.6" }
 
         it "updates the dependency version in the lockfile" do
@@ -179,9 +184,9 @@ RSpec.describe Dependabot::Hex::FileUpdater::LockfileUpdater do
       end
 
       it "retains management info for transitive dependencies" do
-        decimal_lock_line = updated_lockfile_content.
-                            split("\n").
-                            find { |l| l.include?('"decimal":') }
+        decimal_lock_line = updated_lockfile_content
+                            .split("\n")
+                            .find { |l| l.include?('"decimal":') }
         expect(decimal_lock_line).to include ", [:mix], ["
       end
     end
@@ -336,8 +341,42 @@ RSpec.describe Dependabot::Hex::FileUpdater::LockfileUpdater do
 
       it "updates the dependency version in the lockfile" do
         expect(updated_lockfile_content).to include("phoenix.git")
-        expect(updated_lockfile_content).
-          to_not include("178ce1a2344515e9145599970313fcc190d4b881")
+        expect(updated_lockfile_content)
+          .not_to include("178ce1a2344515e9145599970313fcc190d4b881")
+      end
+    end
+
+    context "with a private repo dependency" do
+      let(:mixfile_fixture_name) { "private_repo" }
+      let(:lockfile_fixture_name) { "private_repo" }
+
+      let(:credentials) do
+        Dependabot::Credential.new({
+          "type" => "hex_repository",
+          "repo" => "dependabot",
+          "auth_key" => "d6fc2b6n6h7katic6vuq6k5e2csahcm4",
+          "url" => "https://dependabot-private.fly.dev"
+        })
+      end
+
+      let(:dependency) do
+        Dependabot::Dependency.new(
+          name: "jason",
+          version: "1.1.0",
+          requirements:
+            [{ file: "mix.exs", requirement: "1.1.0", groups: [], source: nil }],
+          previous_version: "1.0.0",
+          previous_requirements:
+            [{ file: "mix.exs", requirement: "1.0.0", groups: [], source: nil }],
+          package_manager: "hex"
+        )
+      end
+
+      it "updates the dependency version in the lockfile" do
+        expect(updated_lockfile_content).to include %({:hex, :jason, "1.1.0")
+        expect(updated_lockfile_content).not_to include(
+          "0f7cfa9bdb23fed721ec05419bcee2b2c21a77e926bce0deda029b5adc716fe2"
+        )
       end
     end
   end

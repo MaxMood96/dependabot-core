@@ -9,6 +9,11 @@ plugins {
     id("org.springframework.boot") version "2.0.5.RELEASE" apply false
     id("com.google.protobuf") version "0.8.4" apply false
     kotlin("jvm") version "1.3.72"
+
+    val helmVersion = "1.6.0"
+    id("org.unbroken-dome.helm") version helmVersion apply false
+
+    id("not.yet.updatable") version libs.versions.notYetUpdatable apply false
 }
 
 buildscript {

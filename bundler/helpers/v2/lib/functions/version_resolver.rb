@@ -1,11 +1,14 @@
+# typed: true
 # frozen_string_literal: true
 
 module Functions
   class VersionResolver
-    GEM_NOT_FOUND_ERROR_REGEX = /locked to (?<name>[^\s]+) \(/.freeze
+    GEM_NOT_FOUND_ERROR_REGEX = /locked to (?<name>[^\s]+) \(/
 
-    attr_reader :dependency_name, :dependency_requirements,
-                :gemfile_name, :lockfile_name
+    attr_reader :dependency_name
+    attr_reader :dependency_requirements
+    attr_reader :gemfile_name
+    attr_reader :lockfile_name
 
     def initialize(dependency_name:, dependency_requirements:,
                    gemfile_name:, lockfile_name:)
@@ -16,6 +19,11 @@ module Functions
     end
 
     def version_details
+      # If the dependency is Bundler itself then we can't trust the
+      # version that has been returned (it's the version Dependabot is
+      # running on, rather than the true latest resolvable version).
+      return nil if dependency_name == "bundler"
+
       dep = dependency_from_definition
 
       # If the dependency wasn't found in the definition, but *is*
@@ -27,11 +35,6 @@ module Functions
       # Otherwise, if the dependency wasn't found it's because it is a
       # subdependency that was removed when attempting to update it.
       return nil if dep.nil?
-
-      # If the dependency is Bundler itself then we can't trust the
-      # version that has been returned (it's the version Dependabot is
-      # running on, rather than the true latest resolvable version).
-      return nil if dep.name == "bundler"
 
       details = {
         version: dep.version,
@@ -81,10 +84,10 @@ module Functions
       # subdependencies
       return [] unless lockfile
 
-      all_deps =  ::Bundler::LockfileParser.new(lockfile).
-                  specs.map(&:name).map(&:to_s).uniq
-      top_level = build_definition([]).dependencies.
-                  map(&:name).map(&:to_s)
+      all_deps =  ::Bundler::LockfileParser.new(lockfile)
+                                           .specs.map { |x| x.name.to_s }.uniq
+      top_level = build_definition([]).dependencies
+                                      .map { |x| x.name.to_s }
 
       all_deps - top_level
     end
@@ -104,8 +107,8 @@ module Functions
     def unlock_yanked_gem(dependencies_to_unlock, error)
       raise unless error.message.match?(GEM_NOT_FOUND_ERROR_REGEX)
 
-      gem_name = error.message.match(GEM_NOT_FOUND_ERROR_REGEX).
-                 named_captures["name"]
+      gem_name = error.message.match(GEM_NOT_FOUND_ERROR_REGEX)
+                      .named_captures["name"]
       raise if dependencies_to_unlock.include?(gem_name)
 
       dependencies_to_unlock << gem_name
@@ -126,7 +129,7 @@ module Functions
     def fetcher_class(dep)
       return unless dep.source.is_a?(::Bundler::Source::Rubygems)
 
-      dep.source.fetchers.first.fetchers.first.class.to_s
+      dep.source.fetchers.first.send(:fetchers).first.class.to_s
     end
 
     def ruby_version

@@ -1,3 +1,4 @@
+# typed: true
 # frozen_string_literal: true
 
 require "open3"
@@ -14,13 +15,22 @@ module Dependabot
   module Elm
     class UpdateChecker
       class Elm19VersionResolver
+        extend T::Sig
+
         class UnrecoverableState < StandardError; end
 
+        sig do
+          params(
+            dependency: Dependabot::Dependency,
+            dependency_files: T::Array[Dependabot::DependencyFile]
+          ).void
+        end
         def initialize(dependency:, dependency_files:)
           @dependency = dependency
           @dependency_files = dependency_files
         end
 
+        sig { params(unlock_requirement: Symbol).returns(T.nilable(Dependabot::Elm::Version)) }
         def latest_resolvable_version(unlock_requirement:)
           raise "Invalid unlock setting: #{unlock_requirement}" unless %i(none own all).include?(unlock_requirement)
 
@@ -33,10 +43,11 @@ module Dependabot
           fetch_latest_resolvable_version(unlock_requirement)
         end
 
+        sig { returns(T::Array[Dependabot::Dependency]) }
         def updated_dependencies_after_full_unlock
           changed_deps = install_metadata
 
-          original_dependency_details.map do |original_dep|
+          original_dependency_details.filter_map do |original_dep|
             new_version = changed_deps.fetch(original_dep.name, nil)
             next unless new_version
 
@@ -60,13 +71,18 @@ module Dependabot
               previous_requirements: original_dep.requirements,
               package_manager: original_dep.package_manager
             )
-          end.compact
+          end
         end
 
         private
 
-        attr_reader :dependency, :dependency_files
+        sig { returns(Dependabot::Dependency) }
+        attr_reader :dependency
 
+        sig { returns(T::Array[Dependabot::DependencyFile]) }
+        attr_reader :dependency_files
+
+        sig { params(unlock_requirement: Symbol).returns(T.nilable(Dependabot::Elm::Version)) }
         def fetch_latest_resolvable_version(unlock_requirement)
           changed_deps = install_metadata
 
@@ -83,17 +99,19 @@ module Dependabot
           current_version
         end
 
+        sig { params(changed_deps: T::Hash[String, Dependabot::Elm::Version]).returns(Symbol) }
         def check_install_result(changed_deps)
           other_deps_bumped =
-            changed_deps.
-            keys.
-            reject { |name| name == dependency.name }
+            changed_deps
+            .keys
+            .reject { |name| name == dependency.name }
 
           return :forced_full_unlock_bump if other_deps_bumped.any?
 
           :clean_bump
         end
 
+        sig { returns(T::Hash[String, Dependabot::Elm::Version]) }
         def install_metadata
           @install_metadata ||=
             SharedHelpers.in_a_temporary_directory do
@@ -113,6 +131,7 @@ module Dependabot
             end
         end
 
+        sig { params(command: String).returns(::String) }
         def run_shell_command(command)
           start = Time.now
           stdout, process = Open3.capture2e(command)
@@ -132,6 +151,7 @@ module Dependabot
           )
         end
 
+        sig { params(error: Dependabot::DependabotError).void }
         def handle_elm_errors(error)
           if error.message.include?("OLD DEPENDENCIES") ||
              error.message.include?("BAD JSON")
@@ -142,15 +162,17 @@ module Dependabot
           raise error
         end
 
+        sig { void }
         def write_temporary_dependency_files
           dependency_files.each do |file|
             path = file.name
             FileUtils.mkdir_p(Pathname.new(path).dirname)
 
-            File.write(path, updated_elm_json_content(file.content))
+            File.write(path, updated_elm_json_content(T.must(file.content)))
           end
         end
 
+        sig { params(content: String).returns(String) }
         def updated_elm_json_content(content)
           json = JSON.parse(content)
 
@@ -158,10 +180,8 @@ module Dependabot
           # `elm install <dependency_name>` to generate the install plan
           %w(dependencies test-dependencies).each do |type|
             json[type].delete(dependency.name) if json.dig(type, dependency.name)
-
-            %w(direct indirect).each do |category|
-              json[type][category].delete(dependency.name) if json.dig(type, category, dependency.name)
-            end
+            json[type]["direct"].delete(dependency.name) if json.dig(type, "direct", dependency.name)
+            json[type]["indirect"].delete(dependency.name) if json.dig(type, "indirect", dependency.name)
           end
 
           json["source-directories"] = []
@@ -169,6 +189,7 @@ module Dependabot
           JSON.dump(json)
         end
 
+        sig { returns(T::Array[Dependabot::Dependency]) }
         def original_dependency_details
           @original_dependency_details ||=
             Elm::FileParser.new(
@@ -177,18 +198,21 @@ module Dependabot
             ).parse
         end
 
+        sig { returns(T.nilable(Dependabot::Elm::Version)) }
         def current_version
           return unless dependency.version
 
-          version_class.new(dependency.version)
+          T.cast(version_class.new(dependency.version), Dependabot::Elm::Version)
         end
 
+        sig { returns(T.class_of(Dependabot::Version)) }
         def version_class
-          Elm::Version
+          dependency.version_class
         end
 
+        sig { returns(T.class_of(Dependabot::Requirement)) }
         def requirement_class
-          Elm::Requirement
+          dependency.requirement_class
         end
       end
     end

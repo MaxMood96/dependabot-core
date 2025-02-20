@@ -1,3 +1,4 @@
+# typed: true
 # frozen_string_literal: true
 
 require "nokogiri"
@@ -13,12 +14,13 @@ module Dependabot
       def self.updated_files_regex
         [
           /^pom\.xml$/, %r{/pom\.xml$},
+          /.*\.xml$/, %r{/.*\.xml$},
           /^extensions.\.xml$/, %r{/extensions\.xml$}
         ]
       end
 
       def updated_dependency_files
-        updated_files = dependency_files.dup
+        updated_files = T.let(dependency_files.dup, T.untyped)
 
         # Loop through each of the changed requirements, applying changes to
         # all pom and extensions files for that change. Note that the logic
@@ -31,11 +33,10 @@ module Dependabot
           )
         end
 
-        updated_files.select! { |f| f.name.end_with?("pom.xml") || f.name.end_with?("extensions.xml") }
+        updated_files.select! { |f| f.name.end_with?(".xml") }
         updated_files.reject! { |f| dependency_files.include?(f) }
 
         raise "No files changed!" if updated_files.none?
-        raise "Updated a supporting POM!" if updated_files.any? { |f| f.name.end_with?("pom_parent.xml") }
 
         updated_files
       end
@@ -51,8 +52,8 @@ module Dependabot
 
         # The UpdateChecker ensures the order of requirements is preserved
         # when updating, so we can zip them together in new/old pairs.
-        reqs = dependency.requirements.zip(dependency.previous_requirements).
-               reject { |new_req, old_req| new_req == old_req }
+        reqs = dependency.requirements.zip(dependency.previous_requirements)
+                         .reject { |new_req, old_req| new_req == old_req }
 
         # Loop through each changed requirement and update the files
         reqs.each do |new_req, old_req|
@@ -77,22 +78,21 @@ module Dependabot
       def update_pomfiles_for_property_change(pomfiles, req)
         property_name = req.fetch(:metadata).fetch(:property_name)
 
-        PropertyValueUpdater.new(dependency_files: pomfiles).
-          update_pomfiles_for_property_change(
-            property_name: property_name,
-            callsite_pom: pomfiles.find { |f| f.name == req.fetch(:file) },
-            updated_value: req.fetch(:requirement)
-          )
+        PropertyValueUpdater.new(dependency_files: pomfiles)
+                            .update_pomfiles_for_property_change(
+                              property_name: property_name,
+                              callsite_pom: pomfiles.find { |f| f.name == req.fetch(:file) },
+                              updated_value: req.fetch(:requirement)
+                            )
       end
 
       def update_version_in_file(dependency, file, previous_req, requirement)
         updated_content = file.content
 
         original_file_declarations(dependency, previous_req).each do |old_dec|
-          updated_content = updated_content.gsub(
-            old_dec,
+          updated_content = updated_content.gsub(old_dec) do
             updated_file_declaration(old_dec, previous_req, requirement)
-          )
+          end
         end
 
         raise "Expected content to change!" if updated_content == file.content

@@ -1,7 +1,9 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 set -e
 
+pushd helpers
+go test ./...
+popd
 bundle install
-bundle exec rubocop .
-bundle exec rspec spec
+bundle exec turbo_tests --verbose

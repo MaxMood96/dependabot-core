@@ -1,1 +1,4 @@
-* @dependabot/reviewers
+* @dependabot/maintainers
+
+nuget/ @dependabot/azure-dev-ops
+dotnet_sdk/ @dependabot/azure-dev-ops

@@ -1,3 +1,4 @@
+# typed: false
 # frozen_string_literal: true
 
 require "spec_helper"
@@ -56,23 +57,23 @@ RSpec.describe Dependabot::Maven::UpdateChecker::PropertyUpdater do
   let(:pom_body) { fixture("poms", "property_pom.xml") }
 
   let(:maven_central_metadata_url_beans) do
-    "https://repo.maven.apache.org/maven2/"\
-    "org/springframework/spring-beans/maven-metadata.xml"
+    "https://repo.maven.apache.org/maven2/" \
+      "org/springframework/spring-beans/maven-metadata.xml"
   end
 
   let(:maven_central_metadata_url_context) do
-    "https://repo.maven.apache.org/maven2/"\
-    "org/springframework/spring-context/maven-metadata.xml"
+    "https://repo.maven.apache.org/maven2/" \
+      "org/springframework/spring-context/maven-metadata.xml"
   end
 
   before do
-    stub_request(:get, maven_central_metadata_url_beans).
-      to_return(
+    stub_request(:get, maven_central_metadata_url_beans)
+      .to_return(
         status: 200,
         body: fixture("maven_central_metadata", "with_release.xml")
       )
-    stub_request(:get, maven_central_metadata_url_context).
-      to_return(
+    stub_request(:get, maven_central_metadata_url_context)
+      .to_return(
         status: 200,
         body: fixture("maven_central_metadata", "with_release.xml")
       )
@@ -80,38 +81,41 @@ RSpec.describe Dependabot::Maven::UpdateChecker::PropertyUpdater do
 
   describe "#update_possible?" do
     subject { updater.update_possible? }
-    it { is_expected.to eq(true) }
+
+    it { is_expected.to be(true) }
 
     context "without a target version" do
       let(:target_version_details) { nil }
-      it { is_expected.to eq(false) }
+
+      it { is_expected.to be(false) }
     end
 
     context "when one dependency is missing the target version" do
       before do
         body = fixture("maven_central_metadata", "missing_latest.xml")
-        stub_request(:get, maven_central_metadata_url_context).
-          to_return(
+        stub_request(:get, maven_central_metadata_url_context)
+          .to_return(
             status: 200,
             body: body
           )
       end
 
-      it { is_expected.to eq(false) }
+      it { is_expected.to be(false) }
     end
 
     context "when one dependency uses multiple properties" do
       let(:pom_body) { fixture("poms", "property_pom_suffix.xml") }
-      it { is_expected.to eq(false) }
+
+      it { is_expected.to be(false) }
     end
 
     context "when one dependency isn't listed" do
       before do
-        stub_request(:get, maven_central_metadata_url_context).
-          to_return(status: 404)
+        stub_request(:get, maven_central_metadata_url_context)
+          .to_return(status: 404)
       end
 
-      it { is_expected.to eq(true) }
+      it { is_expected.to be(true) }
     end
   end
 
@@ -190,8 +194,8 @@ RSpec.describe Dependabot::Maven::UpdateChecker::PropertyUpdater do
     context "when one dependency is missing the target version" do
       before do
         body = fixture("maven_central_metadata", "missing_latest.xml")
-        stub_request(:get, maven_central_metadata_url_context).
-          to_return(status: 200, body: body)
+        stub_request(:get, maven_central_metadata_url_context)
+          .to_return(status: 200, body: body)
       end
 
       specify { expect { updated_dependencies }.to raise_error(/not possible/) }
@@ -221,23 +225,23 @@ RSpec.describe Dependabot::Maven::UpdateChecker::PropertyUpdater do
       let(:dependency_version) { "1.0.0-M2" }
 
       let(:maven_central_metadata_url_runner) do
-        "https://repo.maven.apache.org/maven2/"\
-        "org/junit/platform/junit-platform-runner/maven-metadata.xml"
+        "https://repo.maven.apache.org/maven2/" \
+          "org/junit/platform/junit-platform-runner/maven-metadata.xml"
       end
 
       let(:maven_central_metadata_url_surefire_provider) do
-        "https://repo.maven.apache.org/maven2/"\
-        "org/junit/platform/junit-platform-surefire-provider/maven-metadata.xml"
+        "https://repo.maven.apache.org/maven2/" \
+          "org/junit/platform/junit-platform-surefire-provider/maven-metadata.xml"
       end
 
       before do
-        stub_request(:get, maven_central_metadata_url_runner).
-          to_return(
+        stub_request(:get, maven_central_metadata_url_runner)
+          .to_return(
             status: 200,
             body: fixture("maven_central_metadata", "with_release.xml")
           )
-        stub_request(:get, maven_central_metadata_url_surefire_provider).
-          to_return(
+        stub_request(:get, maven_central_metadata_url_surefire_provider)
+          .to_return(
             status: 200,
             body: fixture("maven_central_metadata", "with_release.xml")
           )

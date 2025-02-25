@@ -1,16 +1,18 @@
+# typed: true
 # frozen_string_literal: true
 
 require "excon"
 require "toml-rb"
 
 require "dependabot/dependency"
+require "dependabot/errors"
+require "dependabot/python/name_normaliser"
+require "dependabot/python/requirement_parser"
+require "dependabot/python/requirement"
+require "dependabot/registry_client"
+require "dependabot/requirements_update_strategy"
 require "dependabot/update_checkers"
 require "dependabot/update_checkers/base"
-require "dependabot/shared_helpers"
-require "dependabot/errors"
-require "dependabot/python/requirement"
-require "dependabot/python/requirement_parser"
-require "dependabot/python/name_normaliser"
 
 module Dependabot
   module Python
@@ -26,7 +28,7 @@ module Dependabot
         https://pypi.python.org/simple/
         https://pypi.org/simple/
       ).freeze
-      VERSION_REGEX = /[0-9]+(?:\.[A-Za-z0-9\-_]+)*/.freeze
+      VERSION_REGEX = /[0-9]+(?:\.[A-Za-z0-9\-_]+)*/
 
       def latest_version
         @latest_version ||= fetch_latest_version
@@ -34,43 +36,25 @@ module Dependabot
 
       def latest_resolvable_version
         @latest_resolvable_version ||=
-          case resolver_type
-          when :pipenv
-            pipenv_version_resolver.latest_resolvable_version(
+          if resolver_type == :requirements
+            resolver.latest_resolvable_version
+          elsif resolver_type == :pip_compile && resolver.resolvable?(version: latest_version)
+            latest_version
+          else
+            resolver.latest_resolvable_version(
               requirement: unlocked_requirement_string
             )
-          when :poetry
-            poetry_version_resolver.latest_resolvable_version(
-              requirement: unlocked_requirement_string
-            )
-          when :pip_compile
-            pip_compile_version_resolver.latest_resolvable_version(
-              requirement: unlocked_requirement_string
-            )
-          when :requirements
-            pip_version_resolver.latest_resolvable_version
-          else raise "Unexpected resolver type #{resolver_type}"
           end
       end
 
       def latest_resolvable_version_with_no_unlock
         @latest_resolvable_version_with_no_unlock ||=
-          case resolver_type
-          when :pipenv
-            pipenv_version_resolver.latest_resolvable_version(
+          if resolver_type == :requirements
+            resolver.latest_resolvable_version_with_no_unlock
+          else
+            resolver.latest_resolvable_version(
               requirement: current_requirement_string
             )
-          when :poetry
-            poetry_version_resolver.latest_resolvable_version(
-              requirement: current_requirement_string
-            )
-          when :pip_compile
-            pip_compile_version_resolver.latest_resolvable_version(
-              requirement: current_requirement_string
-            )
-          when :requirements
-            pip_version_resolver.latest_resolvable_version_with_no_unlock
-          else raise "Unexpected resolver type #{resolver_type}"
           end
       end
 
@@ -89,28 +73,29 @@ module Dependabot
 
       def updated_requirements
         RequirementsUpdater.new(
-          requirements: dependency.requirements,
+          requirements: requirements,
           latest_resolvable_version: preferred_resolvable_version&.to_s,
           update_strategy: requirements_update_strategy,
-          has_lockfile: !(pipfile_lock || poetry_lock || pyproject_lock).nil?
+          has_lockfile: !(pipfile_lock || poetry_lock).nil?
         ).updated_requirements
+      end
+
+      def requirements_unlocked_or_can_be?
+        !requirements_update_strategy.lockfile_only?
       end
 
       def requirements_update_strategy
         # If passed in as an option (in the base class) honour that option
-        return @requirements_update_strategy.to_sym if @requirements_update_strategy
+        return @requirements_update_strategy if @requirements_update_strategy
 
-        # Otherwise, check if this is a poetry library or not
-        poetry_library? ? :widen_ranges : :bump_versions
+        # Otherwise, check if this is a library or not
+        library? ? RequirementsUpdateStrategy::WidenRanges : RequirementsUpdateStrategy::BumpVersions
       end
 
       private
 
       def latest_version_resolvable_with_full_unlock?
-        # Full unlock checks aren't implemented for pip because they're not
-        # relevant (pip doesn't have a resolver). This method always returns
-        # false to ensure `updated_dependencies_after_full_unlock` is never
-        # called.
+        # Full unlock checks aren't implemented for Python (yet)
         false
       end
 
@@ -122,23 +107,27 @@ module Dependabot
         fix_version = lowest_security_fix_version
         return latest_resolvable_version if fix_version.nil?
 
-        return pip_version_resolver.lowest_resolvable_security_fix_version if resolver_type == :requirements
-
-        resolver =
-          case resolver_type
-          when :pip_compile then pip_compile_version_resolver
-          when :pipenv then pipenv_version_resolver
-          when :poetry then poetry_version_resolver
-          else raise "Unexpected resolver type #{resolver_type}"
-          end
+        return resolver.lowest_resolvable_security_fix_version if resolver_type == :requirements
 
         resolver.resolvable?(version: fix_version) ? fix_version : nil
       end
 
-      # rubocop:disable Metrics/PerceivedComplexity
+      def resolver
+        if Dependabot::Experiments.enabled?(:enable_file_parser_python_local)
+          Dependabot.logger.info("Python package resolver : #{resolver_type}")
+        end
+
+        case resolver_type
+        when :pip_compile then pip_compile_version_resolver
+        when :pipenv then pipenv_version_resolver
+        when :poetry then poetry_version_resolver
+        when :requirements then pip_version_resolver
+        else raise "Unexpected resolver type #{resolver_type}"
+        end
+      end
+
       def resolver_type
-        reqs = dependency.requirements
-        req_files = reqs.map { |r| r.fetch(:file) }
+        reqs = requirements
 
         # If there are no requirements then this is a sub-dependency. It
         # must come from one of Pipenv, Poetry or pip-tools, and can't come
@@ -147,9 +136,9 @@ module Dependabot
 
         # Otherwise, this is a top-level dependency, and we can figure out
         # which resolver to use based on the filename of its requirements
-        return :pipenv if req_files.any? { |f| f == "Pipfile" }
-        return :poetry if req_files.any? { |f| f == "pyproject.toml" }
-        return :pip_compile if req_files.any? { |f| f.end_with?(".in") }
+        return :pipenv if updating_pipfile?
+        return pyproject_resolver if updating_pyproject?
+        return :pip_compile if updating_in_file?
 
         if dependency.version && !exact_requirement?(reqs)
           subdependency_resolver
@@ -157,14 +146,19 @@ module Dependabot
           :requirements
         end
       end
-      # rubocop:enable Metrics/PerceivedComplexity
 
       def subdependency_resolver
         return :pipenv if pipfile_lock
-        return :poetry if poetry_lock || pyproject_lock
+        return :poetry if poetry_lock
         return :pip_compile if pip_compile_files.any?
 
         raise "Claimed to be a sub-dependency, but no lockfile exists!"
+      end
+
+      def pyproject_resolver
+        return :poetry if poetry_based?
+
+        :requirements
       end
 
       def exact_requirement?(reqs)
@@ -202,21 +196,20 @@ module Dependabot
         {
           dependency: dependency,
           dependency_files: dependency_files,
-          credentials: credentials
+          credentials: credentials,
+          repo_contents_path: repo_contents_path
         }
       end
 
       def current_requirement_string
-        reqs = dependency.requirements
+        reqs = requirements
         return if reqs.none?
 
-        requirement =
-          case resolver_type
-          when :pipenv then reqs.find { |r| r[:file] == "Pipfile" }
-          when :poetry then reqs.find { |r| r[:file] == "pyproject.toml" }
-          when :pip_compile then reqs.find { |r| r[:file].end_with?(".in") }
-          when :requirements then reqs.find { |r| r[:file].end_with?(".txt") }
-          end
+        requirement = reqs.find do |r|
+          file = r[:file]
+
+          file == "Pipfile" || file == "pyproject.toml" || file.end_with?(".in") || file.end_with?(".txt")
+        end
 
         requirement&.fetch(:requirement)
       end
@@ -234,21 +227,21 @@ module Dependabot
         return lower_bound_req if latest_version.nil?
         return lower_bound_req unless Python::Version.correct?(latest_version)
 
-        lower_bound_req + ", <= #{latest_version}"
+        lower_bound_req + ",<=#{latest_version}"
       end
 
       def updated_version_req_lower_bound
-        return ">= #{dependency.version}" if dependency.version
+        return ">=#{dependency.version}" if dependency.version
 
         version_for_requirement =
-          dependency.requirements.map { |r| r[:requirement] }.compact.
-          reject { |req_string| req_string.start_with?("<") }.
-          select { |req_string| req_string.match?(VERSION_REGEX) }.
-          map { |req_string| req_string.match(VERSION_REGEX) }.
-          select { |version| Gem::Version.correct?(version) }.
-          max_by { |version| Gem::Version.new(version) }
+          requirements.filter_map { |r| r[:requirement] }
+                      .reject { |req_string| req_string.start_with?("<") }
+                      .select { |req_string| req_string.match?(VERSION_REGEX) }
+                      .map { |req_string| req_string.match(VERSION_REGEX).to_s }
+                      .select { |version| Python::Version.correct?(version) }
+                      .max_by { |version| Python::Version.new(version) }
 
-        ">= #{version_for_requirement || 0}"
+        ">=#{version_for_requirement || 0}"
       end
 
       def fetch_latest_version
@@ -266,26 +259,53 @@ module Dependabot
         )
       end
 
-      def poetry_library?
-        return false unless pyproject
+      def poetry_based?
+        updating_pyproject? && !poetry_details.nil?
+      end
+
+      def library?
+        return false unless updating_pyproject?
+
+        return false if library_details["name"].nil?
 
         # Hit PyPi and check whether there are details for a library with a
         # matching name and description
-        details = TomlRB.parse(pyproject.content).dig("tool", "poetry")
-        return false unless details
-
-        index_response = Excon.get(
-          "https://pypi.org/pypi/#{normalised_name(details['name'])}/json/",
-          idempotent: true,
-          **SharedHelpers.excon_defaults
+        index_response = Dependabot::RegistryClient.get(
+          url: "https://pypi.org/pypi/#{normalised_name(library_details['name'])}/json/"
         )
 
         return false unless index_response.status == 200
 
         pypi_info = JSON.parse(index_response.body)["info"] || {}
-        pypi_info["summary"] == details["description"]
+        pypi_info["summary"] == library_details["description"]
+      rescue Excon::Error::Timeout, Excon::Error::Socket
+        false
       rescue URI::InvalidURIError
         false
+      end
+
+      def updating_pipfile?
+        requirement_files.any?("Pipfile")
+      end
+
+      def updating_pyproject?
+        requirement_files.any?("pyproject.toml")
+      end
+
+      def updating_in_file?
+        requirement_files.any? { |f| f.end_with?(".in") }
+      end
+
+      def updating_requirements_file?
+        requirement_files.any? { |f| f =~ /\.txt$|\.in$/ }
+      end
+
+      def requirement_files
+        requirements.map { |r| r.fetch(:file) }
+      end
+
+      def requirements
+        dependency.requirements
       end
 
       def normalised_name(name)
@@ -304,12 +324,28 @@ module Dependabot
         dependency_files.find { |f| f.name == "pyproject.toml" }
       end
 
-      def pyproject_lock
-        dependency_files.find { |f| f.name == "pyproject.lock" }
-      end
-
       def poetry_lock
         dependency_files.find { |f| f.name == "poetry.lock" }
+      end
+
+      def library_details
+        @library_details ||= poetry_details || standard_details || build_system_details
+      end
+
+      def poetry_details
+        @poetry_details ||= toml_content.dig("tool", "poetry")
+      end
+
+      def standard_details
+        @standard_details ||= toml_content["project"]
+      end
+
+      def build_system_details
+        @build_system_details ||= toml_content["build-system"]
+      end
+
+      def toml_content
+        @toml_content ||= TomlRB.parse(pyproject.content)
       end
 
       def pip_compile_files

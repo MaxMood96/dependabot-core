@@ -1,9 +1,10 @@
+# typed: true
 # frozen_string_literal: true
 
 require "excon"
 require "dependabot/update_checkers"
 require "dependabot/update_checkers/base"
-require "dependabot/shared_helpers"
+require "dependabot/registry_client"
 require "dependabot/errors"
 
 module Dependabot
@@ -32,8 +33,8 @@ module Dependabot
 
       def latest_resolvable_version
         @latest_resolvable_version ||=
-          version_resolver.
-          latest_resolvable_version(unlock_requirement: :own)
+          version_resolver
+          .latest_resolvable_version(unlock_requirement: :own)
       end
 
       def latest_resolvable_version_with_no_unlock
@@ -55,8 +56,8 @@ module Dependabot
       def version_resolver
         @version_resolver ||=
           begin
-            unless dependency.requirements.any? { |r| r.fetch(:file) == "elm.json" }
-              raise Dependabot::DependencyFileNotResolvable, "No elm.json found"
+            unless dependency.requirements.any? { |r| r.fetch(:file) == MANIFEST_FILE }
+              raise Dependabot::DependencyFileNotResolvable, "No #{MANIFEST_FILE} found"
             end
 
             Elm19VersionResolver.new(
@@ -71,13 +72,13 @@ module Dependabot
       end
 
       def latest_version_resolvable_with_full_unlock?
-        latest_version == version_resolver.
-                          latest_resolvable_version(unlock_requirement: :all)
+        latest_version == version_resolver
+                          .latest_resolvable_version(unlock_requirement: :all)
       end
 
       def candidate_versions
-        filtered = all_versions.
-                   reject { |v| ignore_requirements.any? { |r| r.satisfied_by?(v) } }
+        filtered = all_versions
+                   .reject { |v| ignore_requirements.any? { |r| r.satisfied_by?(v) } }
 
         if @raise_on_ignored && filter_lower_versions(filtered).empty? && filter_lower_versions(all_versions).any?
           raise AllVersionsIgnored
@@ -87,31 +88,27 @@ module Dependabot
       end
 
       def filter_lower_versions(versions_array)
-        return versions_array unless dependency.version && version_class.correct?(dependency.version)
+        return versions_array unless current_version
 
-        versions_array.
-          select { |version| version > version_class.new(dependency.version) }
+        versions_array
+          .select { |version| version > current_version }
       end
 
       def all_versions
-        return @all_versions if @version_lookup_attempted
+        @all_versions ||= fetch_all_versions
+      end
 
-        @version_lookup_attempted = true
-
-        response = Excon.get(
-          "https://package.elm-lang.org/packages/#{dependency.name}/"\
-          "releases.json",
-          idempotent: true,
-          **Dependabot::SharedHelpers.excon_defaults
+      def fetch_all_versions
+        response = Dependabot::RegistryClient.get(
+          url: "https://package.elm-lang.org/packages/#{dependency.name}/releases.json"
         )
 
-        return @all_versions = [] unless response.status == 200
+        return [] unless response.status == 200
 
-        @all_versions =
-          JSON.parse(response.body).
-          keys.
-          map { |v| version_class.new(v) }.
-          sort
+        JSON.parse(response.body)
+            .keys
+            .map { |v| version_class.new(v) }
+            .sort
       end
 
       # Overwrite the base class's requirements_up_to_date? method to instead
@@ -119,10 +116,10 @@ module Dependabot
       def requirements_up_to_date?
         return false unless latest_version
 
-        dependency.requirements.
-          map { |r| r.fetch(:requirement) }.
-          map { |r| requirement_class.new(r) }.
-          all? { |r| r.satisfied_by?(latest_version) }
+        dependency.requirements
+                  .map { |r| r.fetch(:requirement) }
+                  .map { |r| requirement_class.new(r) }
+                  .all? { |r| r.satisfied_by?(latest_version) }
       end
     end
   end

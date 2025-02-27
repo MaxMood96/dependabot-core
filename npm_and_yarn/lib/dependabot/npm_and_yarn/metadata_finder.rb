@@ -1,3 +1,4 @@
+# typed: true
 # frozen_string_literal: true
 
 require "excon"
@@ -5,7 +6,7 @@ require "time"
 
 require "dependabot/metadata_finders"
 require "dependabot/metadata_finders/base"
-require "dependabot/shared_helpers"
+require "dependabot/registry_client"
 require "dependabot/npm_and_yarn/update_checker/registry_finder"
 require "dependabot/npm_and_yarn/version"
 
@@ -26,9 +27,9 @@ module Dependabot
         return unless npm_listing.dig("time", dependency.version)
         return if previous_releasers.include?(npm_releaser)
 
-        "This version was pushed to npm by "\
-        "[#{npm_releaser}](https://www.npmjs.com/~#{npm_releaser}), a new "\
-        "releaser for #{dependency.name} since your current version."
+        "This version was pushed to npm by " \
+          "[#{npm_releaser}](https://www.npmjs.com/~#{npm_releaser}), a new " \
+          "releaser for #{dependency.name} since your current version."
       end
 
       private
@@ -46,9 +47,9 @@ module Dependabot
       end
 
       def npm_releaser
-        all_version_listings.
-          find { |v, _| v == dependency.version }&.
-          last&.fetch("_npmUser", nil)&.fetch("name", nil)
+        all_version_listings
+          .find { |v, _| v == dependency.version }
+          &.last&.fetch("_npmUser", nil)&.fetch("name", nil)
       end
 
       def previous_releasers
@@ -62,9 +63,9 @@ module Dependabot
           end
         return unless cutoff
 
-        all_version_listings.
-          reject { |v, _| Time.parse(times[v]) > cutoff }.
-          map { |_, d| d.fetch("_npmUser", nil)&.fetch("name", nil) }.compact
+        all_version_listings
+          .reject { |v, _| Time.parse(times[v]) > cutoff }
+          .filter_map { |_, d| d.fetch("_npmUser", nil)&.fetch("name", nil) }
       end
 
       def find_source_from_registry
@@ -92,9 +93,9 @@ module Dependabot
       end
 
       def new_source
-        sources = dependency.requirements.
-                  map { |r| r.fetch(:source) }.uniq.compact.
-                  sort_by { |source| UpdateChecker::RegistryFinder.central_registry?(source[:url]) ? 1 : 0 }
+        sources = dependency.requirements
+                            .map { |r| r.fetch(:source) }.uniq.compact
+                            .sort_by { |source| UpdateChecker::RegistryFinder.central_registry?(source[:url]) ? 1 : 0 }
 
         sources.first
       end
@@ -122,20 +123,6 @@ module Dependabot
       end
 
       def get_directory(details)
-        source_from_url = Source.from_url(get_url(details))
-        # Special case Gatsby, which specifies directories in URLs.
-        # This can be removed once this PR is merged:
-        # https://github.com/gatsbyjs/gatsby/pull/11145
-        if source_from_url.repo == "gatsbyjs/gatsby" &&
-           get_url(details).match?(%r{tree\/master\/.})
-          return get_url(details).split("tree/master/").last.split("#").first
-        end
-
-        # Special case DefinitelyTyped, which has predictable URLs.
-        # This can be removed once this PR is merged:
-        # https://github.com/Microsoft/types-publisher/pull/578
-        return dependency.name.gsub(/^@/, "") if source_from_url.repo == "DefinitelyTyped/DefinitelyTyped"
-
         # Only return a directory if it is explicitly specified
         return unless details.is_a?(Hash)
 
@@ -150,12 +137,7 @@ module Dependabot
       def latest_version_listing
         return @latest_version_listing if defined?(@latest_version_listing)
 
-        response = Excon.get(
-          "#{dependency_url}/latest",
-          idempotent: true,
-          **SharedHelpers.excon_defaults(headers: registry_auth_headers)
-        )
-
+        response = Dependabot::RegistryClient.get(url: "#{dependency_url}/latest", headers: registry_auth_headers)
         return @latest_version_listing = JSON.parse(response.body) if response.status == 200
 
         @latest_version_listing = {}
@@ -166,21 +148,16 @@ module Dependabot
       def all_version_listings
         return [] if npm_listing["versions"].nil?
 
-        npm_listing["versions"].
-          reject { |_, details| details["deprecated"] }.
-          sort_by { |version, _| NpmAndYarn::Version.new(version) }.
-          reverse
+        npm_listing["versions"]
+          .reject { |_, details| details["deprecated"] }
+          .sort_by { |version, _| NpmAndYarn::Version.new(version) }
+          .reverse
       end
 
       def npm_listing
         return @npm_listing unless @npm_listing.nil?
 
-        response = Excon.get(
-          dependency_url,
-          idempotent: true,
-          **SharedHelpers.excon_defaults(headers: registry_auth_headers)
-        )
-
+        response = Dependabot::RegistryClient.get(url: dependency_url, headers: registry_auth_headers)
         return @npm_listing = {} if response.status >= 500
 
         begin
@@ -220,10 +197,10 @@ module Dependabot
       end
 
       def auth_token
-        credentials.
-          select { |cred| cred["type"] == "npm_registry" }.
-          find { |cred| cred["registry"] == dependency_registry }&.
-          fetch("token", nil)
+        credentials
+          .select { |cred| cred["type"] == "npm_registry" }
+          .find { |cred| cred["registry"] == dependency_registry }
+          &.fetch("token", nil)
       end
 
       def non_standard_registry?
@@ -233,5 +210,5 @@ module Dependabot
   end
 end
 
-Dependabot::MetadataFinders.
-  register("npm_and_yarn", Dependabot::NpmAndYarn::MetadataFinder)
+Dependabot::MetadataFinders
+  .register("npm_and_yarn", Dependabot::NpmAndYarn::MetadataFinder)

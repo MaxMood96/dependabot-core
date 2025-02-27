@@ -1,23 +1,27 @@
+# typed: false
 # frozen_string_literal: true
 
 require "spec_helper"
 require "dependabot/npm_and_yarn/file_updater/yarn_lockfile_updater"
 
 RSpec.describe Dependabot::NpmAndYarn::FileUpdater::YarnLockfileUpdater do
+  subject(:updated_yarn_lock_content) { updater.updated_yarn_lock_content(yarn_lock) }
+
   let(:updater) do
     described_class.new(
       dependency_files: files,
       dependencies: dependencies,
-      credentials: credentials
+      credentials: credentials,
+      repo_contents_path: nil
     )
   end
   let(:dependencies) { [dependency] }
 
   let(:credentials) do
-    [{
+    [Dependabot::Credential.new({
       "type" => "git_source",
       "host" => "github.com"
-    }]
+    })]
   end
   let(:dependency) do
     Dependabot::Dependency.new(
@@ -54,17 +58,30 @@ RSpec.describe Dependabot::NpmAndYarn::FileUpdater::YarnLockfileUpdater do
 
   let(:tmp_path) { Dependabot::Utils::BUMP_TMP_DIR_PATH }
 
-  before { Dir.mkdir(tmp_path) unless Dir.exist?(tmp_path) }
+  # Variable to control the enabling feature flag for the corepack fix
+  let(:enable_corepack_for_npm_and_yarn) { true }
 
-  subject(:updated_yarn_lock_content) { updater.updated_yarn_lock_content(yarn_lock) }
+  before do
+    FileUtils.mkdir_p(tmp_path)
+    allow(Dependabot::Experiments).to receive(:enabled?)
+      .with(:enable_corepack_for_npm_and_yarn).and_return(enable_corepack_for_npm_and_yarn)
+    allow(Dependabot::Experiments).to receive(:enabled?)
+      .with(:enable_shared_helpers_command_timeout).and_return(true)
+    allow(Dependabot::Experiments).to receive(:enabled?)
+      .with(:avoid_duplicate_updates_package_json).and_return(false)
+  end
+
+  after do
+    Dependabot::Experiments.reset!
+  end
 
   describe "errors" do
     context "with a dependency version that can't be found" do
       let(:files) { project_dependency_files("yarn/yanked_version") }
 
       it "raises a helpful error" do
-        expect { updated_yarn_lock_content }.
-          to raise_error(Dependabot::DependencyFileNotResolvable)
+        expect { updated_yarn_lock_content }
+          .to raise_error(Dependabot::DependencyFileNotResolvable)
       end
     end
 
@@ -79,8 +96,8 @@ RSpec.describe Dependabot::NpmAndYarn::FileUpdater::YarnLockfileUpdater do
           groups: ["dependencies"],
           source: {
             type: "git",
-            url: "https://github.com/dependabot-fixtures/"\
-            "test-missing-dep-name-npm-package",
+            url: "https://github.com/dependabot-fixtures/" \
+                 "test-missing-dep-name-npm-package",
             branch: nil,
             ref: ref
           }
@@ -93,8 +110,8 @@ RSpec.describe Dependabot::NpmAndYarn::FileUpdater::YarnLockfileUpdater do
           groups: ["dependencies"],
           source: {
             type: "git",
-            url: "https://github.com/dependabot-fixtures/"\
-            "test-missing-dep-name-npm-package",
+            url: "https://github.com/dependabot-fixtures/" \
+                 "test-missing-dep-name-npm-package",
             branch: nil,
             ref: old_ref
           }
@@ -106,8 +123,8 @@ RSpec.describe Dependabot::NpmAndYarn::FileUpdater::YarnLockfileUpdater do
       let(:old_ref) { "v1.0.0" }
 
       it "raises a helpful error" do
-        expect { updated_yarn_lock_content }.
-          to raise_error(Dependabot::DependencyFileNotResolvable)
+        expect { updated_yarn_lock_content }
+          .to raise_error(Dependabot::DependencyFileNotResolvable)
       end
     end
 
@@ -115,8 +132,17 @@ RSpec.describe Dependabot::NpmAndYarn::FileUpdater::YarnLockfileUpdater do
       let(:files) { project_dependency_files("yarn/invalid_requirement") }
 
       it "raises a helpful error" do
-        expect { updated_yarn_lock_content }.
-          to raise_error(Dependabot::DependencyFileNotResolvable)
+        expect { updated_yarn_lock_content }
+          .to raise_error(Dependabot::DependencyFileNotResolvable)
+      end
+    end
+
+    context "with a missing double quotes token value in the .yarnrc.yml" do
+      let(:files) { project_dependency_files("yarn_berry/yarnrc_yml_misconfigured") }
+
+      it "raises a helpful error" do
+        expect { updated_yarn_lock_content }
+          .to raise_error("Expected content to change!")
       end
     end
 
@@ -124,12 +150,12 @@ RSpec.describe Dependabot::NpmAndYarn::FileUpdater::YarnLockfileUpdater do
       let(:files) { project_dependency_files("yarn/private_source") }
 
       it "raises a helpful error" do
-        expect { updated_yarn_lock_content }.
-          to raise_error(Dependabot::PrivateSourceAuthenticationFailure)
+        expect { updated_yarn_lock_content }
+          .to raise_error(Dependabot::PrivateSourceAuthenticationFailure)
       end
     end
 
-    context "because we're updating to a nonexistent version" do
+    context "when updating to a nonexistent version" do
       let(:files) { project_dependency_files("yarn/simple") }
 
       let(:dependency_name) { "fetch-factory" }
@@ -144,8 +170,8 @@ RSpec.describe Dependabot::NpmAndYarn::FileUpdater::YarnLockfileUpdater do
       end
 
       it "raises an unhandled error" do
-        expect { updated_yarn_lock_content }.
-          to raise_error(Dependabot::InconsistentRegistryResponse)
+        expect { updated_yarn_lock_content }
+          .to raise_error(Dependabot::InconsistentRegistryResponse)
       end
     end
 
@@ -153,22 +179,23 @@ RSpec.describe Dependabot::NpmAndYarn::FileUpdater::YarnLockfileUpdater do
       let(:files) { project_dependency_files("yarn/nonexistent_dependency_yanked_version") }
 
       it "raises a helpful error" do
-        expect { updated_yarn_lock_content }.
-          to raise_error(Dependabot::PrivateSourceAuthenticationFailure)
+        expect { updated_yarn_lock_content }
+          .to raise_error(Dependabot::PrivateSourceAuthenticationFailure)
       end
     end
 
     context "with a registry that times out" do
       let(:files) { project_dependency_files("yarn/simple_with_registry_that_times_out") }
 
-      # This test is extremely slow (it takes 1m45 to run) so should only be
-      # run locally.
-      # it "raises a helpful error" do
-      #   expect { updated_yarn_lock_content }.
-      #     to raise_error(Dependabot::PrivateSourceTimedOut) do |error|
-      #       expect(error.source).to eq("timeout.cv/repository/mirror")
-      #     end
-      # end
+      it "raises a helpful error" do
+        skip("This test is extremely slow (1m45s) so only run locally. TODO: stub a custom timeout value.")
+        # TODO: stub a custom short timeout via the .yarnrc file:
+        # https://azureossd.github.io/2022/09/10/fix-yarn-ESOCKETTIMEDOUT-with-.yarnrc-configuration-file/
+        expect { updated_yarn_lock_content }
+          .to raise_error(Dependabot::PrivateSourceTimedOut) do |error|
+            expect(error.source).to eq("timeout.cv/repository/mirror")
+          end
+      end
     end
 
     context "when scoped sub dependency version is missing" do
@@ -186,8 +213,8 @@ RSpec.describe Dependabot::NpmAndYarn::FileUpdater::YarnLockfileUpdater do
           groups: ["dependencies"],
           source: {
             type: "git",
-            url: "https://github.com/dependabot-fixtures/"\
-            "test-missing-scoped-dep-version-npm-package",
+            url: "https://github.com/dependabot-fixtures/" \
+                 "test-missing-scoped-dep-version-npm-package",
             branch: nil,
             ref: ref
           }
@@ -200,8 +227,8 @@ RSpec.describe Dependabot::NpmAndYarn::FileUpdater::YarnLockfileUpdater do
           groups: ["dependencies"],
           source: {
             type: "git",
-            url: "https://github.com/dependabot-fixtures/"\
-            "test-missing-scoped-dep-version-npm-package",
+            url: "https://github.com/dependabot-fixtures/" \
+                 "test-missing-scoped-dep-version-npm-package",
             branch: nil,
             ref: old_ref
           }
@@ -213,8 +240,8 @@ RSpec.describe Dependabot::NpmAndYarn::FileUpdater::YarnLockfileUpdater do
       let(:old_ref) { "v1.0.3" }
 
       it "raises an error" do
-        expect { updated_yarn_lock_content }.
-          to raise_error(Dependabot::InconsistentRegistryResponse)
+        expect { updated_yarn_lock_content }
+          .to raise_error(Dependabot::InconsistentRegistryResponse)
       end
     end
 
@@ -229,8 +256,8 @@ RSpec.describe Dependabot::NpmAndYarn::FileUpdater::YarnLockfileUpdater do
           groups: ["dependencies"],
           source: {
             type: "git",
-            url: "https://github.com/dependabot-fixtures/"\
-            "test-missing-dep-version-npm-package",
+            url: "https://github.com/dependabot-fixtures/" \
+                 "test-missing-dep-version-npm-package",
             branch: nil,
             ref: ref
           }
@@ -243,8 +270,8 @@ RSpec.describe Dependabot::NpmAndYarn::FileUpdater::YarnLockfileUpdater do
           groups: ["dependencies"],
           source: {
             type: "git",
-            url: "https://github.com/dependabot-fixtures/"\
-            "test-missing-dep-version-npm-package",
+            url: "https://github.com/dependabot-fixtures/" \
+                 "test-missing-dep-version-npm-package",
             branch: nil,
             ref: old_ref
           }
@@ -256,8 +283,8 @@ RSpec.describe Dependabot::NpmAndYarn::FileUpdater::YarnLockfileUpdater do
       let(:old_ref) { "v1.0.2" }
 
       it "raises an error" do
-        expect { updated_yarn_lock_content }.
-          to raise_error(Dependabot::SharedHelpers::HelperSubprocessFailed)
+        expect { updated_yarn_lock_content }
+          .to raise_error(Dependabot::SharedHelpers::HelperSubprocessFailed)
       end
     end
 
@@ -297,22 +324,33 @@ RSpec.describe Dependabot::NpmAndYarn::FileUpdater::YarnLockfileUpdater do
       let(:old_ref) { "3.23.1" }
 
       it "raises helpful error" do
-        expect { updated_yarn_lock_content }.
-          to raise_error(Dependabot::DependencyFileNotResolvable)
+        expect { updated_yarn_lock_content }
+          .to raise_error(Dependabot::DependencyFileNotResolvable)
+      end
+    end
+
+    context "with a package.json which contains illegal characters in the name" do
+      let(:files) { project_dependency_files("yarn/package_json_contains_illegal_characters_in_name") }
+
+      it "raises a helpful error" do
+        expect { updated_yarn_lock_content }
+          .to raise_error(Dependabot::DependencyFileNotResolvable) do |error|
+          expect(error.message).to eq("package.json: Name contains illegal characters")
+        end
       end
     end
   end
 
-  context "updating a top-level dependency with a .yarnrc file overriding the yarn registry proxy" do
+  context "when updating a top-level dependency with a .yarnrc file overriding the yarn registry proxy" do
     let(:files) { project_dependency_files("yarn/yarnrc_npm_registry") }
 
     it "keeps the default npm registry" do
-      expect(updated_yarn_lock_content).
-        to include("https://registry.npmjs.org/fetch-factory/-/fetch-factory-0.0.2")
+      expect(updated_yarn_lock_content)
+        .to include("https://registry.npmjs.org/fetch-factory/-/fetch-factory-0.0.2")
     end
   end
 
-  context "updating a sub-dependency with a .yarnrc file overriding the yarn registry proxy" do
+  context "when updating a sub-dependency with a .yarnrc file overriding the yarn registry proxy" do
     let(:files) { project_dependency_files("yarn/yarnrc_npm_registry") }
 
     let(:dependency_name) { "node-fetch" }
@@ -322,8 +360,8 @@ RSpec.describe Dependabot::NpmAndYarn::FileUpdater::YarnLockfileUpdater do
     let(:previous_requirements) { [] }
 
     it "keeps the default npm registry" do
-      expect(updated_yarn_lock_content).
-        to include("https://registry.npmjs.org/node-fetch/-/node-fetch-1.7.3")
+      expect(updated_yarn_lock_content)
+        .to include("https://registry.npmjs.org/node-fetch/-/node-fetch-1.7.3")
     end
   end
 end

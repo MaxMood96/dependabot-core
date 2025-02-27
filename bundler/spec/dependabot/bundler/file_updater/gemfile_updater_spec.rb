@@ -1,3 +1,4 @@
+# typed: false
 # frozen_string_literal: true
 
 require "spec_helper"
@@ -7,7 +8,7 @@ require "dependabot/dependency_file"
 require "dependabot/bundler/file_updater/gemfile_updater"
 
 RSpec.describe Dependabot::Bundler::FileUpdater::GemfileUpdater do
-  include_context "stub rubygems compact index"
+  include_context "when stubbing rubygems compact index"
 
   let(:updater) do
     described_class.new(dependencies: dependencies, gemfile: gemfile)
@@ -49,6 +50,7 @@ RSpec.describe Dependabot::Bundler::FileUpdater::GemfileUpdater do
       let(:previous_requirements) do
         [{ file: "Gemfile", requirement: ">= 0", groups: [], source: nil }]
       end
+
       it { is_expected.to eq(gemfile.content) }
     end
 
@@ -125,6 +127,7 @@ RSpec.describe Dependabot::Bundler::FileUpdater::GemfileUpdater do
           source: nil
         }]
       end
+
       it { is_expected.to include "\"business\", \"~> 1.5.0\"" }
     end
 
@@ -138,6 +141,7 @@ RSpec.describe Dependabot::Bundler::FileUpdater::GemfileUpdater do
       let(:previous_requirements) do
         [{ file: "Gemfile", requirement: "~> 1.4", groups: [], source: nil }]
       end
+
       it { is_expected.to include "\"business\", \"~> 1.5\"" }
       it { is_expected.to include "\"statesman\", \"~> 1.2\"" }
     end
@@ -165,6 +169,7 @@ RSpec.describe Dependabot::Bundler::FileUpdater::GemfileUpdater do
           package_manager: "bundler"
         )
       end
+
       it { is_expected.to include "\"i18n\", \"~> 0.5.0\"" }
     end
 
@@ -172,8 +177,9 @@ RSpec.describe Dependabot::Bundler::FileUpdater::GemfileUpdater do
       let(:gemfile) do
         bundler_project_dependency_file("comments_no_lockfile", filename: "Gemfile")
       end
+
       it do
-        is_expected.to include "\"business\", \"~> 1.5.0\"   # Business time"
+        expect(updated_gemfile_content).to include "\"business\", \"~> 1.5.0\"   # Business time"
       end
     end
 
@@ -181,6 +187,7 @@ RSpec.describe Dependabot::Bundler::FileUpdater::GemfileUpdater do
       let(:gemfile) do
         bundler_project_dependency_file("interpolated_version_no_lockfile", filename: "Gemfile")
       end
+
       it { is_expected.to include "\"business\", \"~> #" }
     end
 
@@ -188,6 +195,7 @@ RSpec.describe Dependabot::Bundler::FileUpdater::GemfileUpdater do
       let(:gemfile) do
         bundler_project_dependency_file("function_version_gemfile", filename: "Gemfile")
       end
+
       it { is_expected.to include "\"business\", version" }
     end
 
@@ -223,10 +231,10 @@ RSpec.describe Dependabot::Bundler::FileUpdater::GemfileUpdater do
       end
 
       it "updates both dependencies" do
-        expect(updated_gemfile_content).
-          to include("\"rspec-mocks\", \"3.6.0\"")
-        expect(updated_gemfile_content).
-          to include("\"rspec-support\", \"3.6.0\"")
+        expect(updated_gemfile_content)
+          .to include("\"rspec-mocks\", \"3.6.0\"")
+        expect(updated_gemfile_content)
+          .to include("\"rspec-support\", \"3.6.0\"")
       end
     end
 
@@ -252,8 +260,8 @@ RSpec.describe Dependabot::Bundler::FileUpdater::GemfileUpdater do
           groups: [],
           source: {
             type: "git",
-            url: "http://github.com/dependabot-fixtures/"\
-            "dependabot-test-ruby-package"
+            url: "http://github.com/dependabot-fixtures/" \
+                 "dependabot-test-ruby-package"
           }
         }]
       end
@@ -264,19 +272,19 @@ RSpec.describe Dependabot::Bundler::FileUpdater::GemfileUpdater do
           groups: [],
           source: {
             type: "git",
-            url: "http://github.com/dependabot-fixtures/"\
-            "dependabot-test-ruby-package"
+            url: "http://github.com/dependabot-fixtures/" \
+                 "dependabot-test-ruby-package"
           }
         }]
       end
 
       it do
-        is_expected.to include(
+        expect(updated_gemfile_content).to include(
           "\"dependabot-test-ruby-package\", \"~> 1.1.0\", git"
         )
       end
 
-      context "that should have its tag updated" do
+      context "when the tag should be updated" do
         let(:gemfile_body) do
           %(gem "dependabot-test-ruby-package", "~> 1.0.0", ) +
             %(git: "https://github.com/dependabot-fixtures/\
@@ -292,8 +300,8 @@ RSpec.describe Dependabot::Bundler::FileUpdater::GemfileUpdater do
             groups: [],
             source: {
               type: "git",
-              url: "http://github.com/dependabot-fixtures/"\
-              "dependabot-test-ruby-package",
+              url: "http://github.com/dependabot-fixtures/" \
+                   "dependabot-test-ruby-package",
               ref: "v1.1.0"
             }
           }]
@@ -306,9 +314,23 @@ RSpec.describe Dependabot::Bundler::FileUpdater::GemfileUpdater do
         end
 
         it { is_expected.to eq(expected_string) }
+
+        context "when updating an evaled gemfile including a different git sourced dependency" do
+          let(:gemfile_body) do
+            %(gem "dependabot-test-other", git: "https://github.com/dependabot-fixtures/dependabot-other")
+          end
+
+          let(:gemfile) do
+            Dependabot::DependencyFile.new(content: gemfile_body, name: "Gemfile.included")
+          end
+
+          it "leaves the evaled gemfile untouched" do
+            expect(updated_gemfile_content).to eq(gemfile_body)
+          end
+        end
       end
 
-      context "that should be removed" do
+      context "when that should be removed" do
         let(:dependency) do
           Dependabot::Dependency.new(
             name: "dependabot-test-ruby-package",
@@ -329,7 +351,7 @@ RSpec.describe Dependabot::Bundler::FileUpdater::GemfileUpdater do
         end
 
         it do
-          is_expected.to include(
+          expect(updated_gemfile_content).to include(
             "\"dependabot-test-ruby-package\", \"~> 1.1.0\""
           )
         end
@@ -342,6 +364,7 @@ RSpec.describe Dependabot::Bundler::FileUpdater::GemfileUpdater do
           let(:gemfile) do
             Dependabot::DependencyFile.new(content: gemfile_body, name: "Gemfile")
           end
+
           it { is_expected.to eq(%(gem "dependabot-test-ruby-package")) }
         end
 
@@ -353,8 +376,9 @@ RSpec.describe Dependabot::Bundler::FileUpdater::GemfileUpdater do
           let(:gemfile) do
             Dependabot::DependencyFile.new(content: gemfile_body, name: "Gemfile")
           end
+
           it do
-            is_expected.to eq(
+            expect(updated_gemfile_content).to eq(
               %(gem "dependabot-test-ruby-package", "~> 1.1.0", require: false)
             )
           end
@@ -368,8 +392,9 @@ RSpec.describe Dependabot::Bundler::FileUpdater::GemfileUpdater do
           let(:gemfile) do
             Dependabot::DependencyFile.new(content: gemfile_body, name: "Gemfile")
           end
+
           it do
-            is_expected.to eq(
+            expect(updated_gemfile_content).to eq(
               %(gem "dependabot-test-ruby-package", "~> 1.1.0", require: false)
             )
           end
@@ -383,8 +408,9 @@ RSpec.describe Dependabot::Bundler::FileUpdater::GemfileUpdater do
           let(:gemfile) do
             Dependabot::DependencyFile.new(content: gemfile_body, name: "Gemfile")
           end
+
           it do
-            is_expected.to eq(
+            expect(updated_gemfile_content).to eq(
               %(gem("dependabot-test-ruby-package", "~> 1.1.0", require: false))
             )
           end
@@ -398,8 +424,9 @@ RSpec.describe Dependabot::Bundler::FileUpdater::GemfileUpdater do
           let(:gemfile) do
             Dependabot::DependencyFile.new(content: gemfile_body, name: "Gemfile")
           end
+
           it do
-            is_expected.to eq(
+            expect(updated_gemfile_content).to eq(
               %(gem "dependabot-test-ruby-package", '~> 1.1.0', require: false)
             )
           end
@@ -412,8 +439,9 @@ RSpec.describe Dependabot::Bundler::FileUpdater::GemfileUpdater do
           let(:gemfile) do
             Dependabot::DependencyFile.new(content: gemfile_body, name: "Gemfile")
           end
+
           it do
-            is_expected.to eq(%(gem "dependabot-test-ruby-package", "~> 1.1.0"))
+            expect(updated_gemfile_content).to eq(%(gem "dependabot-test-ruby-package", "~> 1.1.0"))
           end
         end
 
@@ -424,8 +452,9 @@ RSpec.describe Dependabot::Bundler::FileUpdater::GemfileUpdater do
           let(:gemfile) do
             Dependabot::DependencyFile.new(content: gemfile_body, name: "Gemfile")
           end
+
           it do
-            is_expected.to eq(%(gem "dependabot-test-ruby-package" # My gem))
+            expect(updated_gemfile_content).to eq(%(gem "dependabot-test-ruby-package" # My gem))
           end
         end
       end

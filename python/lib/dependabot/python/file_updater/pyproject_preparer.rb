@@ -1,3 +1,4 @@
+# typed: true
 # frozen_string_literal: true
 
 require "toml-rb"
@@ -18,31 +19,40 @@ module Dependabot
           @lockfile = lockfile
         end
 
-        def replace_sources(credentials)
-          pyproject_object = TomlRB.parse(pyproject_content)
-          poetry_object = pyproject_object.fetch("tool").fetch("poetry")
+        # For hosted Dependabot token will be nil since the credentials aren't present.
+        # This is for those running Dependabot themselves and for dry-run.
+        def add_auth_env_vars(credentials)
+          TomlRB.parse(@pyproject_content).dig("tool", "poetry", "source")&.each do |source|
+            cred = credentials&.find { |c| c["index-url"] == source["url"] }
+            next unless cred
 
-          sources_hash = pyproject_sources.map { |source| [source["url"], source] }.to_h
+            token = cred.fetch("token", nil)
+            next unless token && token.count(":") == 1
 
-          config_variable_sources(credentials).each do |source|
-            if sources_hash.key?(source["original_url"])
-              sources_hash[source["original_url"]]["url"] = source["url"]
-            else
-              source.delete("original_url")
-              sources_hash[source["url"]] = source
+            arr = token.split(":")
+            # https://python-poetry.org/docs/configuration/#using-environment-variables
+            name = source["name"]&.upcase&.gsub(/\W/, "_")
+            ENV["POETRY_HTTP_BASIC_#{name}_USERNAME"] = arr[0]
+            ENV["POETRY_HTTP_BASIC_#{name}_PASSWORD"] = arr[1]
+          end
+        end
+
+        def update_python_requirement(requirement)
+          pyproject_object = TomlRB.parse(@pyproject_content)
+          if (python_specification = pyproject_object.dig("tool", "poetry", "dependencies", "python"))
+            python_req = Python::Requirement.new(python_specification)
+            unless python_req.satisfied_by?(requirement)
+              pyproject_object["tool"]["poetry"]["dependencies"]["python"] = "~#{requirement}"
             end
           end
-
-          poetry_object["source"] = sources_hash.values unless sources_hash.empty?
-
           TomlRB.dump(pyproject_object)
         end
 
         def sanitize
           # {{ name }} syntax not allowed
-          pyproject_content.
-            gsub(/\{\{.*?\}\}/, "something").
-            gsub('#{', "{")
+          pyproject_content
+            .gsub(/\{\{.*?\}\}/, "something")
+            .gsub('#{', "{")
         end
 
         # rubocop:disable Metrics/PerceivedComplexity
@@ -54,9 +64,10 @@ module Dependabot
           poetry_object = pyproject_object["tool"]["poetry"]
           excluded_names = dependencies.map(&:name) + ["python"]
 
-          Dependabot::Python::FileParser::PoetryFilesParser::POETRY_DEPENDENCY_TYPES.each do |key|
+          Dependabot::Python::FileParser::PyprojectFilesParser::POETRY_DEPENDENCY_TYPES.each do |key|
             next unless poetry_object[key]
 
+            source_types = %w(directory file url)
             poetry_object.fetch(key).each do |dep_name, _|
               next if excluded_names.include?(normalise(dep_name))
 
@@ -64,15 +75,21 @@ module Dependabot
 
               next unless (locked_version = locked_details&.fetch("version"))
 
-              next if %w(directory file url).include?(locked_details&.dig("source", "type"))
+              next if source_types.include?(locked_details&.dig("source", "type"))
 
               if locked_details&.dig("source", "type") == "git"
                 poetry_object[key][dep_name] = {
                   "git" => locked_details&.dig("source", "url"),
                   "rev" => locked_details&.dig("source", "reference")
                 }
+                subdirectory = locked_details&.dig("source", "subdirectory")
+                poetry_object[key][dep_name]["subdirectory"] = subdirectory if subdirectory
               elsif poetry_object[key][dep_name].is_a?(Hash)
                 poetry_object[key][dep_name]["version"] = locked_version
+              elsif poetry_object[key][dep_name].is_a?(Array)
+                # if it has multiple-constraints, locking to a single version is
+                # going to result in a bad lockfile, ignore
+                next
               else
                 poetry_object[key][dep_name] = locked_version
               end
@@ -86,41 +103,16 @@ module Dependabot
 
         private
 
-        attr_reader :pyproject_content, :lockfile
+        attr_reader :pyproject_content
+        attr_reader :lockfile
 
         def locked_details(dep_name)
-          parsed_lockfile.fetch("package").
-            find { |d| d["name"] == normalise(dep_name) }
+          parsed_lockfile.fetch("package")
+                         .find { |d| d["name"] == normalise(dep_name) }
         end
 
         def normalise(name)
           NameNormaliser.normalise(name)
-        end
-
-        def pyproject_sources
-          return @pyproject_sources if @pyproject_sources
-
-          pyproject_sources ||=
-            TomlRB.parse(pyproject_content).
-            dig("tool", "poetry", "source")
-
-          @pyproject_sources ||=
-            (pyproject_sources || []).
-            map { |h| h.dup.merge("url" => h["url"].gsub(%r{/*$}, "") + "/") }
-        end
-
-        def config_variable_sources(credentials)
-          @config_variable_sources ||=
-            credentials.
-            select { |cred| cred["type"] == "python_index" }.
-            map do |c|
-              {
-                "original_url" => c["index-url"],
-                "url" => AuthedUrlBuilder.authed_url(credential: c),
-                "name" => SecureRandom.hex[0..3],
-                "default" => c["replaces-base"]
-              }.compact
-            end
         end
 
         def parsed_lockfile

@@ -6,6 +6,7 @@ namespace Dependabot\Composer;
 
 use Composer\DependencyResolver\Request;
 use Composer\Factory;
+use Composer\Filter\PlatformRequirementFilter\PlatformRequirementFilterFactory;
 use Composer\Installer;
 use Composer\Package\PackageInterface;
 
@@ -59,6 +60,8 @@ final class UpdateChecker
             $composer->getAutoloadGenerator()
         );
 
+        $composer->getEventDispatcher()->setRunScripts(false);
+
         // For all potential options, see UpdateCommand in composer
         $install
             ->setUpdate(true)
@@ -66,8 +69,8 @@ final class UpdateChecker
             ->setDevMode(true)
             ->setUpdateAllowTransitiveDependencies(Request::UPDATE_LISTED_WITH_TRANSITIVE_DEPS)
             ->setDumpAutoloader(false)
-            ->setRunScripts(false)
-            ->setIgnorePlatformRequirements(false);
+            ->setPlatformRequirementFilter(PlatformRequirementFilterFactory::fromBoolOrList(false))
+            ->setAudit(false);
 
         // if no lock is present, we do not do a partial update as
         // this is not supported by the Installer
@@ -85,7 +88,7 @@ final class UpdateChecker
 
         // We found the package in the list of updated packages. Return its version.
         if ($updatedPackage instanceof PackageInterface) {
-            return preg_replace('/^([v])/', '', $updatedPackage->getPrettyVersion());
+            return ltrim($updatedPackage->getPrettyVersion(), 'v');
         }
 
         // We didn't find the package in the list of updated packages. Check if
@@ -107,14 +110,14 @@ final class UpdateChecker
         // Similarly, check if the package was provided by any other package.
         foreach ($composer->getPackage()->getProvides() as $link) {
             if ($link->getTarget() === $dependencyName) {
-                return preg_replace('/^([v])/', '', $link->getPrettyConstraint());
+                return ltrim($link->getPrettyConstraint(), 'v');
             }
         }
 
         foreach ($installedPackages as $package) {
             foreach ($package->getProvides() as $link) {
                 if ($link->getTarget() === $dependencyName) {
-                    return preg_replace('/^([v])/', '', $link->getPrettyConstraint());
+                    return ltrim($link->getPrettyConstraint(), 'v');
                 }
             }
         }

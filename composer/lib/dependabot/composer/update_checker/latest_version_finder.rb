@@ -1,3 +1,4 @@
+# typed: true
 # frozen_string_literal: true
 
 require "excon"
@@ -33,8 +34,11 @@ module Dependabot
 
         private
 
-        attr_reader :dependency, :dependency_files, :credentials,
-                    :ignored_versions, :security_advisories
+        attr_reader :dependency
+        attr_reader :dependency_files
+        attr_reader :credentials
+        attr_reader :ignored_versions
+        attr_reader :security_advisories
 
         def fetch_latest_version
           versions = available_versions
@@ -62,8 +66,8 @@ module Dependabot
 
         def filter_ignored_versions(versions_array)
           filtered =
-            versions_array.
-            reject { |v| ignore_requirements.any? { |r| r.satisfied_by?(v) } }
+            versions_array
+            .reject { |v| ignore_requirements.any? { |r| r.satisfied_by?(v) } }
 
           if @raise_on_ignored && filter_lower_versions(filtered).empty? && filter_lower_versions(versions_array).any?
             raise AllVersionsIgnored
@@ -73,15 +77,15 @@ module Dependabot
         end
 
         def filter_lower_versions(versions_array)
-          return versions_array unless dependency.version && version_class.correct?(dependency.version)
+          return versions_array unless dependency.numeric_version
 
-          versions_array.
-            select { |version| version > version_class.new(dependency.version) }
+          versions_array
+            .select { |version| version > dependency.numeric_version }
         end
 
         def wants_prerelease?
-          current_version = dependency.version
-          return true if current_version && version_class.new(current_version).prerelease?
+          current_version = dependency.numeric_version
+          return true if current_version&.prerelease?
 
           dependency.requirements.any? do |req|
             req[:requirement].match?(/\d-[A-Za-z]/)
@@ -89,26 +93,26 @@ module Dependabot
         end
 
         def available_versions
-          registry_version_details.
-            select { |version| version_class.correct?(version.gsub(/^v/, "")) }.
-            map { |version| version_class.new(version.gsub(/^v/, "")) }
+          registry_version_details
+            .select { |version| version_class.correct?(version.gsub(/^v/, "")) }
+            .map { |version| version_class.new(version.gsub(/^v/, "")) }
         end
 
         def registry_version_details
           return @registry_version_details unless @registry_version_details.nil?
 
           repositories =
-            JSON.parse(composer_file.content).
-            fetch("repositories", []).
-            select { |r| r.is_a?(Hash) }
+            JSON.parse(composer_file.content)
+                .fetch("repositories", [])
+                .select { |r| r.is_a?(Hash) }
 
-          urls = repositories.
-                 select { |h| h["type"] == "composer" }.
-                 map { |h| h["url"] }.compact.
-                 map { |url| url.gsub(%r{\/$}, "") + "/packages.json" }
+          urls = repositories
+                 .select { |h| h["type"] == PackageManager::NAME }
+                 .filter_map { |h| h["url"] }
+                 .map { |url| url.gsub(%r{\/$}, "") + "/packages.json" }
 
           unless repositories.any? { |rep| rep["packagist.org"] == false }
-            urls << "https://packagist.org/p/#{dependency.name.downcase}.json"
+            urls << "https://repo.packagist.org/p2/#{dependency.name.downcase}.json"
           end
 
           @registry_version_details = []
@@ -119,14 +123,15 @@ module Dependabot
         end
 
         def fetch_registry_versions_from_url(url)
-          cred = registry_credentials.find { |c| url.include?(c["registry"]) }
+          url_host = URI(url).host
+          cred = registry_credentials.find { |c| url_host == c["registry"] || url_host == URI(c["registry"]).host }
 
-          response = Excon.get(
-            url,
-            idempotent: true,
-            user: cred&.fetch("username", nil),
-            password: cred&.fetch("password", nil),
-            **SharedHelpers.excon_defaults
+          response = Dependabot::RegistryClient.get(
+            url: url,
+            options: {
+              user: cred&.fetch("username", nil),
+              password: cred&.fetch("password", nil)
+            }
           )
 
           parse_registry_response(response, url)
@@ -139,17 +144,38 @@ module Dependabot
 
           listing = JSON.parse(response.body)
           return [] if listing.nil?
+          return [] unless listing.is_a?(Hash)
           return [] if listing.fetch("packages", []) == []
           return [] unless listing.dig("packages", dependency.name.downcase)
 
-          listing.dig("packages", dependency.name.downcase).keys
+          extract_versions(listing)
         rescue JSON::ParserError
           msg = "'#{url}' does not contain valid JSON"
           raise DependencyFileNotResolvable, msg
         end
 
+        def extract_versions(listing)
+          # Packagist's Metadata API format:
+          # v1: "packages": {<package name>: {<version_number>: {hash of metadata for a particular release version}}}
+          # v2: "packages": {<package name>: [{hash of metadata for a particular release version}]}
+          version_listings = listing.dig("packages", dependency.name.downcase)
+
+          if version_listings.is_a?(Hash) # some private registries are still using the v1 format
+            # Regardless of API version, composer always reads the version from the metadata hash. So for the v1 API,
+            # ignore the keys as repositories other than packagist.org could be using different keys. Instead, coerce
+            # to an array of metadata hashes to match v2 format.
+            version_listings = version_listings.values
+          end
+
+          if version_listings.is_a?(Array)
+            version_listings.map { |i| i.fetch("version") }
+          else
+            []
+          end
+        end
+
         def registry_credentials
-          credentials.select { |cred| cred["type"] == "composer_repository" } +
+          credentials.select { |cred| cred["type"] == PackageManager::REPOSITORY_KEY } +
             auth_json_credentials
         end
 
@@ -170,14 +196,16 @@ module Dependabot
 
         def composer_file
           composer_file =
-            dependency_files.find { |f| f.name == "composer.json" }
-          raise "No composer.json!" unless composer_file
+            dependency_files.find do |f|
+              f.name == PackageManager::MANIFEST_FILENAME
+            end
+          raise "No #{PackageManager::MANIFEST_FILENAME}!" unless composer_file
 
           composer_file
         end
 
         def auth_json
-          dependency_files.find { |f| f.name == "auth.json" }
+          dependency_files.find { |f| f.name == PackageManager::AUTH_FILENAME }
         end
 
         def ignore_requirements
@@ -185,13 +213,11 @@ module Dependabot
         end
 
         def version_class
-          Utils.version_class_for_package_manager(dependency.package_manager)
+          dependency.version_class
         end
 
         def requirement_class
-          Utils.requirement_class_for_package_manager(
-            dependency.package_manager
-          )
+          dependency.requirement_class
         end
       end
     end

@@ -1,3 +1,4 @@
+# typed: strict
 # frozen_string_literal: true
 
 # These all need to be required so the various classes can be registered in a
@@ -11,17 +12,17 @@ require "dependabot/gradle/requirement"
 require "dependabot/gradle/version"
 
 require "dependabot/pull_request_creator/labeler"
-Dependabot::PullRequestCreator::Labeler.
-  register_label_details("gradle", name: "java", colour: "ffa221")
+Dependabot::PullRequestCreator::Labeler
+  .register_label_details("gradle", name: "java", colour: "ffa221")
 
 require "dependabot/dependency"
 Dependabot::Dependency.register_production_check("gradle", ->(_) { true })
 
-Dependabot::Dependency.
-  register_display_name_builder(
+Dependabot::Dependency
+  .register_display_name_builder(
     "gradle",
     lambda { |name|
       artifact_id = name.split(":").last
-      %w(bom library).include?(artifact_id) ? name : artifact_id
+      name.length <= 100 ? name : artifact_id
     }
   )

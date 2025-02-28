@@ -1,3 +1,4 @@
+# typed: true
 # frozen_string_literal: true
 
 require "dependabot/bundler/update_checker"
@@ -31,6 +32,8 @@ module Dependabot
         #   * version [String] the version of the blocking dependency
         #   * requirement [String] the requirement on the target_dependency
         def conflicting_dependencies(dependency:, target_version:)
+          return [] if lockfile.nil?
+
           in_a_native_bundler_context(error_handling: false) do |tmp_dir|
             NativeHelpers.run_bundler_subprocess(
               bundler_version: bundler_version,
